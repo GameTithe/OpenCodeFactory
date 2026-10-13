@@ -1,0 +1,9 @@
+적용된 제한
+- Worker 1명, 동기 작업 위임
+- 작업당 최대 20분
+- 최초 실행 후 최대 재시도 2회
+- Manager·Worker 컨텍스트 여유 10% 이하 시 새 작업 중단
+- Manager 현재 작업 경로와 Worker 세션 경로가 다르면 위임 거부
+- Manager만 Worker 위임 도구 사용 가능
+- 현재 작업이 끝나기 전 새 작업 위임 거부
+- 상태를 .opencode/orchestration/state.json에 저장
