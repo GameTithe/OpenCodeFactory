@@ -117,8 +117,9 @@ function openCurrentSessionWindows(projectRoot) {
     console.warn("Session windows were not opened because start-opencode-sessions.bat is missing.");
     return;
   }
-  const child = spawn("cmd.exe", ["/d", "/c", `call "${script}"`], {
+  const child = spawn(script, [], {
     cwd: projectRoot,
+    shell: true,
     detached: true,
     stdio: "ignore",
     windowsHide: true,

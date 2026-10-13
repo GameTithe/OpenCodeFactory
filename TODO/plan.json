@@ -79,6 +79,56 @@
       "dependsOn": [
         "P004-copy-test-folder"
       ]
+    },
+    {
+      "id": "P006-gui",
+      "title": "gui테스트",
+      "goal": "openCOdeSetting 폴더안에 TestGUI폴더를 생성한다.",
+      "acceptanceCriteria": [
+        "TestGUI폴더를 생성한다.."
+      ],
+      "constraints": [
+        "범위와 제약을 작성하세요."
+      ],
+      "dependsOn": [
+        "P005-update-copy-file"
+      ],
+      "session": {
+        "mode": "new"
+      }
+    },
+    {
+      "id": "P006-gui2",
+      "title": "gui테스트2",
+      "goal": "openCOdeSetting 폴더안에 TestGUI2폴더를 생성한다.",
+      "acceptanceCriteria": [
+        "TestGUI2폴더를 생성한다.."
+      ],
+      "constraints": [
+        "범위와 제약을 작성하세요."
+      ],
+      "dependsOn": [
+        "P005-update-copy-file"
+      ],
+      "session": {
+        "mode": "new"
+      }
+    },
+    {
+      "id": "P007-create-naturetest-folder",
+      "title": "Create NatureTest Folder",
+      "goal": "Create the NatureTest directory at the root of the OpenCodeSetting folder.",
+      "acceptanceCriteria": [
+        "The directory C:\\Users\\Admin\\Desktop\\openCodeSetting\\NatureTest exists."
+      ],
+      "constraints": [
+        "Create only the requested empty directory.",
+        "Do not modify existing files or directories."
+      ],
+      "dependsOn": [],
+      "session": {
+        "mode": "new"
+      }
     }
   ]
 }

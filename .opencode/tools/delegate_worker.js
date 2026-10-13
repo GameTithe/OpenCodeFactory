@@ -93,8 +93,9 @@ function saveSessionIDs(projectRoot, values) {
 function openWorkerSessionWindow(projectRoot) {
   const script = path.join(projectRoot, "start-opencode-worker-session.bat");
   if (!fs.existsSync(script)) return;
-  const child = spawn("cmd.exe", ["/d", "/c", `call "${script}"`], {
+  const child = spawn(script, [], {
     cwd: projectRoot,
+    shell: true,
     detached: true,
     stdio: "ignore",
     windowsHide: true,
