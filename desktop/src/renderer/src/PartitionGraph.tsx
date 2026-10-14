@@ -57,6 +57,7 @@ export default function PartitionGraph({ partitions, state, layout, selectedIDs,
     return {
       id: partition.id,
       type: "partition",
+      deletable: false,
       position: saved ?? { x: 50 + (index % 3) * 310, y: 50 + Math.floor(index / 3) * 215 },
       selected: selectedIDs.includes(partition.id),
       data: {
@@ -157,7 +158,6 @@ export default function PartitionGraph({ partitions, state, layout, selectedIDs,
           if (connection.source && connection.target && connection.source !== connection.target) onConnect(connection.source, connection.target);
         }}
         onEdgesDelete={editable ? (deleted) => deleted.forEach((edge) => onDisconnect(edge.source, edge.target)) : undefined}
-        nodesDeletable={false}
         deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
       >
         <Background gap={18} size={1} color="#29364a" />

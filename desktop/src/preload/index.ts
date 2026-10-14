@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("orchestrator", {
   archive: (partitionID: string) => ipcRenderer.invoke("orchestrator:archive", partitionID),
   delete: (partitionID: string) => ipcRenderer.invoke("orchestrator:delete", partitionID),
   retry: (partitionID: string) => ipcRenderer.invoke("orchestrator:retry", partitionID),
+  resolveRecovery: (partitionID: string, action: "resume" | "restart" | "block") => ipcRenderer.invoke("orchestrator:resolve-recovery", partitionID, action),
   summary: (partitionID: string) => ipcRenderer.invoke("orchestrator:summary", partitionID),
   onChanged: (listener: (snapshot: unknown) => void) => {
     const callback = (_event: Electron.IpcRendererEvent, snapshot: unknown) => listener(snapshot);

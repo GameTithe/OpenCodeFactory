@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 
 type Partition = {
@@ -30,6 +30,7 @@ type Snapshot = {
   state: Record<string, unknown> | null;
   logs: string[];
   error: string | null;
+  lock: { pid?: number; startedAt?: string; command?: string; active: boolean } | null;
 };
 
 const projectRoot = process.env.OPENCODE_PROJECT_ROOT
@@ -41,6 +42,7 @@ const archiveDirectory = path.join(projectRoot, "TODO", "archive");
 const serverUrl = "http://127.0.0.1:4096";
 const plannerSettingsFile = path.join(projectRoot, ".opencode", "orchestration", "gui-settings.json");
 const graphLayoutFile = path.join(projectRoot, ".opencode", "orchestration", "graph-layout.json");
+const runnerLockFile = path.join(projectRoot, ".opencode", "orchestration", "runner.lock.json");
 
 let mainWindow: BrowserWindow | null = null;
 let runner: ChildProcessWithoutNullStreams | null = null;
@@ -147,8 +149,30 @@ function validateGraphLayout(value: unknown): asserts value is GraphLayout {
   }
 }
 
+function runnerLock() {
+  try {
+    return JSON.parse(readFileSync(runnerLockFile, "utf8")) as { pid?: number; startedAt?: string; command?: string };
+  } catch {
+    return null;
+  }
+}
+
+function processAlive(pid: number | undefined) {
+  if (!Number.isInteger(pid) || !pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 function requireIdle() {
   if (runner) throw new Error("실행 중에는 계획 또는 기록을 변경할 수 없습니다.");
+  const lock = runnerLock();
+  if (lock && processAlive(lock.pid)) {
+    throw new Error(`다른 실행기가 동작 중입니다. PID ${lock.pid}의 실행이 끝난 뒤 다시 시도하세요.`);
+  }
 }
 
 function resolveProjectFile(relative: string) {
@@ -247,7 +271,39 @@ async function retryBlockedPartition(partitionID: string) {
   appendLog(`${partitionID} 파티션을 재시도 대기 상태로 되돌렸습니다.`);
 }
 
+async function resolveRecovery(partitionID: string, action: "resume" | "restart" | "block") {
+  requireIdle();
+  const { plan, state } = await loadPlanAndState();
+  if (!plan.partitions.some((partition) => partition.id === partitionID) || state.recovery?.partitionID !== partitionID) {
+    throw new Error("복구가 필요한 파티션을 찾을 수 없습니다.");
+  }
+  for (const [taskID, task] of Object.entries(state.tasks as Record<string, { partitionID?: string }>)) {
+    if (task.partitionID === partitionID) delete state.tasks[taskID];
+  }
+  state.activeTask = null;
+  state.run.currentPartitionID = null;
+  state.run.updatedAt = new Date().toISOString();
+  if (action === "block") {
+    state.partitions[partitionID].status = "blocked";
+    state.partitions[partitionID].blockedAt = new Date().toISOString();
+    state.run.status = "blocked";
+    delete state.recovery;
+    appendLog(`${partitionID} 파티션을 사용자 요청으로 차단 상태로 유지했습니다.`);
+  } else {
+    state.partitions[partitionID].status = "pending";
+    state.partitions[partitionID][action === "resume" ? "resumedAt" : "restartedAt"] = new Date().toISOString();
+    state.run.status = "idle";
+    if (action === "restart" && state.sessions?.active?.ownerPartitionID === partitionID) {
+      state.sessions.active = null;
+      delete state.recovery;
+    }
+    appendLog(`${partitionID} 파티션을 ${action === "resume" ? "기존 세션으로 재개" : "새 세션으로 처음부터 재시도"}하도록 준비했습니다.`);
+  }
+  await writeJson(stateFile, state);
+}
+
 async function snapshot(): Promise<Snapshot> {
+  const lock = runnerLock();
   return {
     projectRoot,
     runner: runner ? "running" : "idle",
@@ -255,6 +311,7 @@ async function snapshot(): Promise<Snapshot> {
     state: await readJson<Record<string, unknown>>(stateFile),
     logs: [...logs],
     error: lastError,
+    lock: lock ? { ...lock, active: processAlive(lock.pid) } : null,
   };
 }
 
@@ -278,6 +335,8 @@ function startDetachedScript(scriptName: string) {
 
 function startRunner() {
   if (runner) throw new Error("이미 파티션 실행기가 동작 중입니다.");
+  const lock = runnerLock();
+  if (lock && processAlive(lock.pid)) throw new Error(`다른 실행기가 이미 동작 중입니다. PID: ${lock.pid}`);
   const script = path.join(projectRoot, "run-partitions.bat");
   if (!existsSync(script)) throw new Error("run-partitions.bat을 찾을 수 없습니다.");
   lastError = null;
@@ -548,6 +607,12 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("orchestrator:retry", async (_event, partitionID: string) => {
     await retryBlockedPartition(partitionID);
+    await publish();
+    return snapshot();
+  });
+  ipcMain.handle("orchestrator:resolve-recovery", async (_event, partitionID: string, action: "resume" | "restart" | "block") => {
+    if (!["resume", "restart", "block"].includes(action)) throw new Error("잘못된 복구 동작입니다.");
+    await resolveRecovery(partitionID, action);
     await publish();
     return snapshot();
   });

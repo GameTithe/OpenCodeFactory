@@ -61,6 +61,7 @@ export type State = {
   tasks?: Record<string, { taskID?: string; partitionID?: string | null; objective?: string; status?: string }>;
   partitions?: Record<string, PartitionState>;
   sessions?: { active?: { managerSessionID?: string; workerSessionID?: string; ownerPartitionID?: string } | null };
+  recovery?: { partitionID?: string; status?: string; detectedAt?: string; message?: string };
 };
 
 export type Snapshot = {
@@ -70,6 +71,7 @@ export type Snapshot = {
   state: State | null;
   logs: string[];
   error: string | null;
+  lock: { pid?: number; startedAt?: string; command?: string; active: boolean } | null;
 };
 
 declare global {
@@ -89,6 +91,7 @@ declare global {
       archive: (partitionID: string) => Promise<Snapshot>;
       delete: (partitionID: string) => Promise<Snapshot>;
       retry: (partitionID: string) => Promise<Snapshot>;
+      resolveRecovery: (partitionID: string, action: "resume" | "restart" | "block") => Promise<Snapshot>;
       summary: (partitionID: string) => Promise<string>;
       onChanged: (listener: (snapshot: Snapshot) => void) => () => void;
     };

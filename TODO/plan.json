@@ -1,21 +1,5 @@
 {
   "version": 1,
   "goal": "TEST 폴더 생성부터 Copy_TEST 수정까지 5단계로 순차 수행한다.",
-  "partitions": [
-    {
-      "id": "P009-create-autonodetest-folder",
-      "title": "autoNodeTest 폴더 생성",
-      "goal": "프로젝트 루트에 autoNodeTest 디렉터리를 생성한다.",
-      "acceptanceCriteria": [
-        "프로젝트 루트에 autoNodeTest 디렉터리가 존재한다."
-      ],
-      "constraints": [
-        "새 파일이나 다른 디렉터리는 생성하지 않는다."
-      ],
-      "dependsOn": [],
-      "session": {
-        "mode": "new"
-      }
-    }
-  ]
+  "partitions": []
 }

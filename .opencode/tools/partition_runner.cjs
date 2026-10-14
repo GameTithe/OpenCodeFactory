@@ -24,6 +24,10 @@ function statePath(projectRoot) {
   return path.join(projectRoot, ".opencode", "orchestration", "state.json");
 }
 
+function lockPath(projectRoot) {
+  return path.join(projectRoot, ".opencode", "orchestration", "runner.lock.json");
+}
+
 function loadJSON(file, message) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -97,7 +101,76 @@ function loadState(projectRoot) {
 function saveState(projectRoot, state) {
   fs.mkdirSync(path.dirname(statePath(projectRoot)), { recursive: true });
   state.run.updatedAt = now();
-  fs.writeFileSync(statePath(projectRoot), JSON.stringify(state, null, 2));
+  const temporary = `${statePath(projectRoot)}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(temporary, statePath(projectRoot));
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function readRunnerLock(projectRoot) {
+  try {
+    return JSON.parse(fs.readFileSync(lockPath(projectRoot), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function acquireRunnerLock(projectRoot) {
+  const file = lockPath(projectRoot);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const record = { pid: process.pid, token, startedAt: now(), command: process.argv.join(" ") };
+  try {
+    fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx" });
+    return record;
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+
+  const existing = readRunnerLock(projectRoot);
+  if (existing && processAlive(existing.pid)) {
+    throw new Error(`Another partition runner is already active (PID ${existing.pid}, started ${existing.startedAt ?? "unknown"}).`);
+  }
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx" });
+  return record;
+}
+
+function releaseRunnerLock(projectRoot, lock) {
+  const existing = readRunnerLock(projectRoot);
+  if (existing?.token === lock?.token) fs.rmSync(lockPath(projectRoot), { force: true });
+}
+
+function recoverInterruptedRun(state) {
+  const partitionID = state.run?.currentPartitionID;
+  if (!partitionID || state.partitions?.[partitionID]?.status !== "running") return false;
+  const interruptedAt = now();
+  const activeTaskKey = state.activeTask?.taskKey ?? state.activeTask?.taskID;
+  if (activeTaskKey && state.tasks?.[activeTaskKey]) {
+    state.tasks[activeTaskKey].status = "interrupted";
+    state.tasks[activeTaskKey].updatedAt = interruptedAt;
+  }
+  state.activeTask = null;
+  state.partitions[partitionID].status = "needs_attention";
+  state.partitions[partitionID].interruptedAt = interruptedAt;
+  state.run.status = "needs_attention";
+  state.run.currentPartitionID = null;
+  state.recovery = {
+    partitionID,
+    status: "interrupted",
+    detectedAt: interruptedAt,
+    message: "The previous runner ended before this partition recorded a final status.",
+  };
+  return true;
 }
 
 function sessionFile(projectRoot) {
@@ -167,13 +240,17 @@ async function validateSessions(projectRoot, managerID, workerID) {
 
 async function sessionsForPartition(projectRoot, state, partition) {
   const session = partition.session ?? { mode: "new" };
+  const active = state.sessions?.active;
+  if (state.recovery?.partitionID === partition.id && active?.managerSessionID && active?.workerSessionID) {
+    await validateSessions(projectRoot, active.managerSessionID, active.workerSessionID);
+    return { managerID: active.managerSessionID, workerID: active.workerSessionID, mode: "continue", from: "interrupted run" };
+  }
   if (session.mode === "new") {
     const managerID = await createSession(projectRoot, `Manager ${partition.id}`);
     const workerID = await createSession(projectRoot, `Worker ${partition.id}`);
     return { managerID, workerID, mode: "new" };
   }
 
-  const active = state.sessions?.active;
   if (!active?.managerSessionID || !active?.workerSessionID) {
     throw new Error(`${partition.id} cannot continue because no active Manager and Worker sessions are recorded.`);
   }
@@ -224,7 +301,7 @@ function managerPrompt(projectRoot, state, partition, sessions) {
 function nextPartition(plan, state) {
   return plan.partitions.find((partition) => {
     const status = state.partitions[partition.id]?.status;
-    if (status === "completed" || status === "blocked") return false;
+    if (["completed", "blocked", "needs_attention", "running"].includes(status)) return false;
     return (partition.dependsOn ?? []).every((dependency) => state.partitions[dependency]?.status === "completed");
   });
 }
@@ -254,6 +331,7 @@ async function runPartition(projectRoot, plan, state, partition) {
     workerSessionID: workerID,
     ownerPartitionID: partition.id,
   };
+  if (state.recovery?.partitionID === partition.id) delete state.recovery;
   saveState(projectRoot, state);
 
   if (sessions.mode === "new") openCurrentSessionWindows(projectRoot);
@@ -293,38 +371,51 @@ async function runPartition(projectRoot, plan, state, partition) {
 
 async function main() {
   const projectRoot = parseArgs();
-  const plan = loadPlan(projectRoot);
-  if (plan.partitions.length === 0) throw new Error("TODO/plan.json has no partitions.");
+  const lock = acquireRunnerLock(projectRoot);
+  try {
+    const plan = loadPlan(projectRoot);
+    if (plan.partitions.length === 0) throw new Error("TODO/plan.json has no partitions.");
 
-  let state = loadState(projectRoot);
-  if (state.paused) throw new Error(`Dispatch is paused: ${state.paused.reason}. Inspect state.json first.`);
-  if (state.run.currentPartitionID) {
-    const current = plan.partitions.find((partition) => partition.id === state.run.currentPartitionID);
-    if (!current) throw new Error(`State references unknown partition ${state.run.currentPartitionID}.`);
-    state = (await runPartition(projectRoot, plan, state, current)).state;
-    if (state.partitions[current.id]?.status === "blocked") return;
-  }
-
-  while (true) {
-    const partition = nextPartition(plan, state);
-    if (!partition) {
-      const unfinished = plan.partitions.filter((item) => state.partitions[item.id]?.status !== "completed");
-      if (unfinished.length) {
-        throw new Error(`No runnable partition remains: ${unfinished.map((item) => item.id).join(", ")}.`);
-      }
-      state.run.status = "completed";
-      state.run.currentPartitionID = null;
+    let state = loadState(projectRoot);
+    if (recoverInterruptedRun(state)) {
       saveState(projectRoot, state);
-      console.log("All partitions completed.");
-      return;
+      throw new Error(`Recovered interrupted partition ${state.recovery.partitionID}. Choose resume, restart, or block in the desktop app.`);
     }
-    const result = await runPartition(projectRoot, plan, state, partition);
-    state = result.state;
-    if (result.status === "blocked") return;
+    if (state.paused) throw new Error(`Dispatch is paused: ${state.paused.reason}. Inspect state.json first.`);
+    if (state.run.currentPartitionID) {
+      const current = plan.partitions.find((partition) => partition.id === state.run.currentPartitionID);
+      if (!current) throw new Error(`State references unknown partition ${state.run.currentPartitionID}.`);
+      state = (await runPartition(projectRoot, plan, state, current)).state;
+      if (state.partitions[current.id]?.status === "blocked") return;
+    }
+
+    while (true) {
+      const partition = nextPartition(plan, state);
+      if (!partition) {
+        const unfinished = plan.partitions.filter((item) => state.partitions[item.id]?.status !== "completed");
+        if (unfinished.length) {
+          throw new Error(`No runnable partition remains: ${unfinished.map((item) => item.id).join(", ")}.`);
+        }
+        state.run.status = "completed";
+        state.run.currentPartitionID = null;
+        saveState(projectRoot, state);
+        console.log("All partitions completed.");
+        return;
+      }
+      const result = await runPartition(projectRoot, plan, state, partition);
+      state = result.state;
+      if (result.status === "blocked") return;
+    }
+  } finally {
+    releaseRunnerLock(projectRoot, lock);
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { acquireRunnerLock, defaultState, lockPath, nextPartition, readRunnerLock, recoverInterruptedRun, releaseRunnerLock };

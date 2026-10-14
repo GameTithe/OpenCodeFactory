@@ -9,6 +9,7 @@ const emptySnapshot: Snapshot = {
   state: null,
   logs: [],
   error: null,
+  lock: null,
 };
 
 function partitionStatus(snapshot: Snapshot, partition: Partition) {
@@ -332,6 +333,24 @@ export default function App() {
     }
   }
 
+  async function resolveRecovery(action: "resume" | "restart" | "block") {
+    const partitionID = snapshot.state?.recovery?.partitionID;
+    if (!partitionID) return;
+    const labels = { resume: "기존 세션으로 재개", restart: "새 세션으로 처음부터 재시도", block: "차단 상태로 유지" };
+    if (!window.confirm(`${partitionID}을(를) ${labels[action]}할까요?`)) return;
+    await actionRequest(() => window.orchestrator.resolveRecovery(partitionID, action), `${labels[action]} 준비를 완료했습니다.`);
+  }
+
+  async function actionRequest(run: () => Promise<Snapshot>, success: string) {
+    try {
+      const next = await run();
+      setSnapshot(next);
+      setNotice(success);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   const active = snapshot.state?.sessions?.active;
   const selectedPartition = selectedPartitionIDs.length === 1 ? partitions.find((partition) => partition.id === selectedPartitionIDs[0]) ?? null : null;
   const selectedPlannerModelUnavailable = Boolean(
@@ -358,6 +377,16 @@ export default function App() {
 
       {notice && <div className="notice">{notice}</div>}
       {snapshot.error && <div className="notice error">실행기 오류: {snapshot.error}</div>}
+      {snapshot.lock && snapshot.runner === "idle" && <div className={`notice ${snapshot.lock.active ? "error" : ""}`}>{snapshot.lock.active ? `다른 실행기가 상태 잠금을 보유 중입니다. PID: ${snapshot.lock.pid ?? "unknown"}` : "이전 실행에서 남은 잠금을 다음 실행 시 안전하게 정리합니다."}</div>}
+      {snapshot.state?.recovery?.partitionID && <section className="notice recovery-notice">
+        <strong>{snapshot.state.recovery.partitionID} 실행이 중단되었습니다.</strong>
+        <span>{snapshot.state.recovery.message ?? "재개 또는 재시도 방식을 선택하세요."}</span>
+        <div className="editor-actions">
+          <button onClick={() => void resolveRecovery("resume")}>기존 세션으로 재개</button>
+          <button onClick={() => void resolveRecovery("restart")}>처음부터 재시도</button>
+          <button className="danger" onClick={() => void resolveRecovery("block")}>차단 유지</button>
+        </div>
+      </section>}
 
       <section className="metrics">
         <Metric label="전체 파티션" value={stats.total} />
