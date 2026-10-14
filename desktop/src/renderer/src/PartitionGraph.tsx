@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Background, Controls, Handle, MiniMap, Position, ReactFlow, type Connection, type Edge, type Node, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { GraphLayout, GraphPlannerRequest, Partition, State } from "./types";
@@ -33,8 +33,9 @@ type Props = {
   partitions: Partition[];
   state: State | null;
   layout: GraphLayout;
-  selectedID: string | null;
-  onSelect: (id: string) => void;
+  selectedIDs: string[];
+  onSelectionChange: (ids: string[]) => void;
+  onRequestDelete: (ids: string[]) => void;
   onMove: (id: string, position: { x: number; y: number }) => void;
   onConnect: (source: string, target: string) => void;
   onDisconnect: (source: string, target: string) => void;
@@ -42,9 +43,11 @@ type Props = {
   editable: boolean;
 };
 
-export default function PartitionGraph({ partitions, state, layout, selectedID, onSelect, onMove, onConnect, onDisconnect, onCreatePlan, editable }: Props) {
+export default function PartitionGraph({ partitions, state, layout, selectedIDs, onSelectionChange, onRequestDelete, onMove, onConnect, onDisconnect, onCreatePlan, editable }: Props) {
   const [instance, setInstance] = useState<ReactFlowInstance | null>(null);
   const [menu, setMenu] = useState<(GraphPlannerRequest & { clientX: number; clientY: number }) | null>(null);
+  const rightDrag = useRef<{ start: { x: number; y: number }; moved: boolean } | null>(null);
+  const suppressContextMenu = useRef(false);
   const activeOwner = state?.sessions?.active?.ownerPartitionID;
   const activeTask = state?.activeTask?.taskID;
   const nodes: Array<Node<PartitionNodeData>> = partitions.map((partition, index) => {
@@ -55,7 +58,7 @@ export default function PartitionGraph({ partitions, state, layout, selectedID, 
       id: partition.id,
       type: "partition",
       position: saved ?? { x: 50 + (index % 3) * 310, y: 50 + Math.floor(index / 3) * 215 },
-      selected: selectedID === partition.id,
+      selected: selectedIDs.includes(partition.id),
       data: {
         partition,
         status: partitionState?.status ?? "pending",
@@ -73,7 +76,35 @@ export default function PartitionGraph({ partitions, state, layout, selectedID, 
   })));
 
   return (
-    <div className="graph-canvas">
+    <div className="graph-canvas" onKeyDownCapture={(event) => {
+      if (!editable || !["Backspace", "Delete"].includes(event.key) || !selectedIDs.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onRequestDelete(selectedIDs);
+    }} onPointerDownCapture={(event) => {
+      if (!editable || event.button !== 2) return;
+      rightDrag.current = { start: { x: event.clientX, y: event.clientY }, moved: false };
+      suppressContextMenu.current = false;
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }} onPointerMoveCapture={(event) => {
+      const drag = rightDrag.current;
+      if (!drag) return;
+      if (Math.abs(event.clientX - drag.start.x) > 4 || Math.abs(event.clientY - drag.start.y) > 4) drag.moved = true;
+    }} onPointerUpCapture={(event) => {
+      const drag = rightDrag.current;
+      rightDrag.current = null;
+      if (!drag || !drag.moved || !instance) return;
+      suppressContextMenu.current = true;
+      const start = instance.screenToFlowPosition(drag.start);
+      const end = instance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const selected = instance.getIntersectingNodes({
+        x: Math.min(start.x, end.x),
+        y: Math.min(start.y, end.y),
+        width: Math.abs(end.x - start.x),
+        height: Math.abs(end.y - start.y),
+      }, false).map((node) => node.id);
+      onSelectionChange(selected);
+    }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -84,9 +115,19 @@ export default function PartitionGraph({ partitions, state, layout, selectedID, 
         nodesConnectable={editable}
         nodesDraggable={editable}
         onInit={setInstance}
-        onNodeClick={(_event, node) => onSelect(node.id)}
-        onPaneClick={() => setMenu(null)}
+        onNodeClick={(event, node) => {
+          const next = event.shiftKey
+            ? selectedIDs.includes(node.id) ? selectedIDs.filter((id) => id !== node.id) : [...selectedIDs, node.id]
+            : [node.id];
+          onSelectionChange(next);
+        }}
+        onPaneClick={() => { setMenu(null); onSelectionChange([]); }}
         onPaneContextMenu={(event) => {
+          if (suppressContextMenu.current) {
+            event.preventDefault();
+            suppressContextMenu.current = false;
+            return;
+          }
           if (!editable || !instance) return;
           event.preventDefault();
           setMenu({
@@ -96,6 +137,11 @@ export default function PartitionGraph({ partitions, state, layout, selectedID, 
           });
         }}
         onNodeContextMenu={(event, node) => {
+          if (suppressContextMenu.current) {
+            event.preventDefault();
+            suppressContextMenu.current = false;
+            return;
+          }
           if (!editable || !instance) return;
           event.preventDefault();
           const partition = (node.data as PartitionNodeData).partition;
@@ -111,7 +157,8 @@ export default function PartitionGraph({ partitions, state, layout, selectedID, 
           if (connection.source && connection.target && connection.source !== connection.target) onConnect(connection.source, connection.target);
         }}
         onEdgesDelete={editable ? (deleted) => deleted.forEach((edge) => onDisconnect(edge.source, edge.target)) : undefined}
-        deleteKeyCode={["Backspace", "Delete"]}
+        nodesDeletable={false}
+        deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
       >
         <Background gap={18} size={1} color="#29364a" />
         <MiniMap nodeColor={(node) => node.data?.status === "completed" ? "#237b59" : node.data?.status === "running" ? "#347ec4" : node.data?.status === "blocked" ? "#a8503d" : "#4a5870"} />

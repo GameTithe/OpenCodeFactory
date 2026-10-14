@@ -36,7 +36,8 @@ export default function App() {
   const [plannerModels, setPlannerModels] = useState<PlannerModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [graphLayout, setGraphLayout] = useState<GraphLayout>({ positions: {} });
-  const [selectedPartitionID, setSelectedPartitionID] = useState<string | null>(null);
+  const [selectedPartitionIDs, setSelectedPartitionIDs] = useState<string[]>([]);
+  const [deleteSelection, setDeleteSelection] = useState<Partition[] | null>(null);
   const [graphPlanner, setGraphPlanner] = useState<GraphPlannerRequest | null>(null);
   const [graphPlannerGoal, setGraphPlannerGoal] = useState("");
   const [graphGeneratedPlan, setGraphGeneratedPlan] = useState<GeneratedPlan | null>(null);
@@ -258,9 +259,10 @@ export default function App() {
   }
 
   function updateSelectedPartition(changes: Partial<Partition>) {
-    if (!selectedPartitionID) return;
+    const selectedID = selectedPartitionIDs.length === 1 ? selectedPartitionIDs[0] : null;
+    if (!selectedID) return;
     editDraft((plan) => {
-      const partition = plan.partitions.find((item) => item.id === selectedPartitionID);
+      const partition = plan.partitions.find((item) => item.id === selectedID);
       if (!partition) throw new Error("선택한 파티션을 찾을 수 없습니다.");
       Object.assign(partition, changes);
     });
@@ -290,6 +292,35 @@ export default function App() {
     }
   }
 
+  function requestDelete(ids: string[]) {
+    const selected = partitions.filter((partition) => ids.includes(partition.id));
+    if (selected.length) setDeleteSelection(selected);
+  }
+
+  async function deleteSelected(mode: "archive" | "permanent") {
+    if (!deleteSelection) return;
+    const running = deleteSelection.filter((partition) => partitionStatus(snapshot, partition) === "running");
+    if (running.length) {
+      setNotice("실행 중인 파티션은 아카이브하거나 완전 삭제할 수 없습니다.");
+      return;
+    }
+    try {
+      let next = snapshot;
+      for (const partition of deleteSelection) {
+        next = mode === "archive"
+          ? await window.orchestrator.archive(partition.id)
+          : await window.orchestrator.delete(partition.id);
+      }
+      setSnapshot(next);
+      setPlanText(next.plan ? JSON.stringify(next.plan, null, 2) : "");
+      setSelectedPartitionIDs([]);
+      setDeleteSelection(null);
+      setNotice(mode === "archive" ? "선택한 파티션을 아카이브했습니다." : "선택한 파티션과 관련 기록을 완전 삭제했습니다.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function retry(partition: Partition) {
     if (!window.confirm(`${partition.title}을(를) 재시도할까요? 이 파티션의 이전 Worker 작업 기록만 초기화됩니다.`)) return;
     try {
@@ -302,7 +333,7 @@ export default function App() {
   }
 
   const active = snapshot.state?.sessions?.active;
-  const selectedPartition = partitions.find((partition) => partition.id === selectedPartitionID) ?? null;
+  const selectedPartition = selectedPartitionIDs.length === 1 ? partitions.find((partition) => partition.id === selectedPartitionIDs[0]) ?? null : null;
   const selectedPlannerModelUnavailable = Boolean(
     plannerSettings.model
       && plannerModels.length
@@ -337,7 +368,7 @@ export default function App() {
 
       <section className="panel graph-panel">
           <div className="panel-heading">
-            <div><p className="eyebrow">DEPENDENCY GRAPH</p><h2>파티션 실행 흐름</h2><p className="muted">화살표는 선행 작업에서 후속 작업으로 향합니다. 노드를 연결하거나 간선을 선택 후 Delete로 의존성을 수정할 수 있습니다.</p></div>
+             <div><p className="eyebrow">DEPENDENCY GRAPH</p><h2>파티션 실행 흐름</h2><p className="muted">Shift+클릭 또는 우클릭 드래그로 노드를 선택합니다. 선택 노드는 Delete로 아카이브 또는 완전 삭제하고, 간선은 Delete로 의존성을 수정합니다.</p></div>
             <div className="editor-actions">
               <span>{snapshot.runner === "running" ? "실행 중에는 읽기 전용" : "드래그로 배치 저장"}</span>
               <button className="primary" disabled={snapshot.runner === "running"} onClick={() => void savePlan()}>계획 저장</button>
@@ -347,16 +378,17 @@ export default function App() {
           partitions={partitions}
           state={snapshot.state}
           layout={graphLayout}
-          selectedID={selectedPartitionID}
+          selectedIDs={selectedPartitionIDs}
           editable={snapshot.runner !== "running"}
-          onSelect={setSelectedPartitionID}
+          onSelectionChange={setSelectedPartitionIDs}
+          onRequestDelete={requestDelete}
           onMove={moveNode}
           onConnect={connectNodes}
           onDisconnect={disconnectNodes}
           onCreatePlan={openGraphPlanner}
         />
         {selectedPartition && <div className="node-inspector">
-          <div className="panel-heading"><div><p className="eyebrow">NODE INSPECTOR</p><h2>{selectedPartition.title}</h2></div><button onClick={() => setSelectedPartitionID(null)}>선택 해제</button></div>
+          <div className="panel-heading"><div><p className="eyebrow">NODE INSPECTOR</p><h2>{selectedPartition.title}</h2></div><button onClick={() => setSelectedPartitionIDs([])}>선택 해제</button></div>
           <div className="inspector-grid">
             <label>제목<input disabled={snapshot.runner === "running"} value={selectedPartition.title} onChange={(event) => updateSelectedPartition({ title: event.target.value })} /></label>
             <label>세션 정책<select disabled={snapshot.runner === "running"} value={selectedPartition.session?.mode ?? "new"} onChange={(event) => updateSelectedPartition({ session: { mode: event.target.value as "new" | "continue" } })}><option value="new">new</option><option value="continue">continue</option></select></label>
@@ -393,8 +425,8 @@ export default function App() {
                   <div className="partition-actions">
                      <button className="text-button" disabled={!state?.summaryFile} onClick={() => void showSummary(partition)}>요약</button>
                      {(status === "blocked" || status === "needs_attention") && <button className="text-button" disabled={snapshot.runner === "running"} onClick={() => void retry(partition)}>재시도</button>}
-                     {status === "completed" && <button className="text-button" onClick={() => void archive(partition)}>아카이브</button>}
-                    {status === "completed" && <button className="delete-button" onClick={() => void permanentlyDelete(partition)}>완전 삭제</button>}
+                      {status !== "running" && <button className="text-button" disabled={snapshot.runner === "running"} onClick={() => void archive(partition)}>아카이브</button>}
+                     {status !== "running" && <button className="delete-button" disabled={snapshot.runner === "running"} onClick={() => void permanentlyDelete(partition)}>완전 삭제</button>}
                   </div>
                 </article>
               );
@@ -472,6 +504,14 @@ export default function App() {
         <p className="muted">실행 중에는 계획을 잠가 현재 실행과 파일 상태가 충돌하지 않도록 합니다.</p>
       </section>
 
+      {deleteSelection && <div className="modal-backdrop" onClick={() => setDeleteSelection(null)}>
+        <section className="modal delete-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="panel-heading"><div><p className="eyebrow">DELETE PARTITIONS</p><h2>{deleteSelection.length}개 노드 삭제</h2></div><button onClick={() => setDeleteSelection(null)}>취소</button></div>
+          <p className="muted">실행 중인 파티션만 처리할 수 없습니다. 아카이브는 실행 기록과 요약을 보존하고, 완전 삭제는 관련 상태와 기록을 되돌릴 수 없게 제거합니다.</p>
+          <ul className="delete-selection">{deleteSelection.map((partition) => <li key={partition.id}>{partition.title} <span>{statusLabel(partitionStatus(snapshot, partition))}</span></li>)}</ul>
+          <div className="editor-actions modal-actions"><button onClick={() => void deleteSelected("archive")}>아카이브</button><button className="danger" onClick={() => void deleteSelected("permanent")}>완전 삭제</button></div>
+        </section>
+      </div>}
       {summary && <div className="modal-backdrop" onClick={() => setSummary(null)}>
         <section className="modal" onClick={(event) => event.stopPropagation()}>
           <div className="panel-heading"><h2>{summary.title}</h2><button onClick={() => setSummary(null)}>닫기</button></div>

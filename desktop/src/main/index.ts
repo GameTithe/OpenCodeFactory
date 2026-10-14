@@ -171,17 +171,11 @@ async function loadPlanAndState() {
   return { plan, state };
 }
 
-function removeCompletedPartition(plan: Plan, state: Record<string, any>, partitionID: string) {
+function removePartition(plan: Plan, state: Record<string, any>, partitionID: string) {
   const partition = plan.partitions.find((item) => item.id === partitionID);
   if (!partition) throw new Error("활성 계획에서 해당 파티션을 찾을 수 없습니다.");
-  if (state.partitions?.[partitionID]?.status !== "completed") {
-    throw new Error("완료된 파티션만 아카이브하거나 완전 삭제할 수 있습니다.");
-  }
+  if (state.partitions?.[partitionID]?.status === "running") throw new Error("실행 중인 파티션은 아카이브하거나 완전 삭제할 수 없습니다.");
   const dependents = plan.partitions.filter((item) => item.dependsOn?.includes(partitionID));
-  const activeDependent = dependents.find((item) => state.partitions?.[item.id]?.status !== "completed");
-  if (activeDependent) {
-    throw new Error(`${activeDependent.id}이(가) 아직 완료되지 않아 이 파티션을 제거할 수 없습니다.`);
-  }
   plan.partitions = plan.partitions.filter((item) => item.id !== partitionID);
   for (const dependent of dependents) {
     dependent.dependsOn = dependent.dependsOn?.filter((id) => id !== partitionID);
@@ -192,7 +186,7 @@ function removeCompletedPartition(plan: Plan, state: Record<string, any>, partit
 async function archivePartition(partitionID: string) {
   requireIdle();
   const { plan, state } = await loadPlanAndState();
-  const partition = removeCompletedPartition(plan, state, partitionID);
+  const partition = removePartition(plan, state, partitionID);
   const partitionState = state.partitions[partitionID];
   let summary = "";
   if (partitionState?.summaryFile) {
@@ -217,7 +211,7 @@ async function archivePartition(partitionID: string) {
 async function permanentlyDeletePartition(partitionID: string) {
   requireIdle();
   const { plan, state } = await loadPlanAndState();
-  const partition = removeCompletedPartition(plan, state, partitionID);
+  const partition = removePartition(plan, state, partitionID);
   const partitionState = state.partitions[partitionID];
   for (const [taskID, task] of Object.entries(state.tasks as Record<string, { partitionID?: string }>)) {
     if (task.partitionID === partitionID) delete state.tasks[taskID];
