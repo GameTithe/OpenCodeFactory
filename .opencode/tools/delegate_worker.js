@@ -197,6 +197,10 @@ function activePartitionID(state) {
   return state.run?.currentPartitionID ?? null;
 }
 
+function taskStateID(partitionID, taskID) {
+  return partitionID ? `${partitionID}::${taskID}` : taskID;
+}
+
 function handoffPath(projectRoot, partitionID) {
   return path.join(projectRoot, ".opencode", "orchestration", "handoffs", `${partitionID}-worker.md`);
 }
@@ -290,6 +294,7 @@ export default tool({
     state.tasks ??= {};
     state.partitions ??= {};
     state.run ??= { status: "idle", currentPartitionID: null };
+    const partitionID = activePartitionID(state);
     if (state.paused) {
       return `PAUSED: dispatch is stopped. Reason: ${state.paused.reason}. Check ${statePath(projectRoot)} before resuming.`;
     }
@@ -301,13 +306,16 @@ export default tool({
     }
 
     if (state.activeTask) {
+      const activeTaskKey = state.activeTask.taskKey ?? state.activeTask.taskID;
       const deadline = Date.parse(state.activeTask.deadline);
       if (Number.isFinite(deadline) && Date.now() > deadline) {
         await api(context.directory, `/session/${state.activeTask.workerSessionID}/abort`, {
           method: "POST",
         }).catch(() => undefined);
-        state.tasks[state.activeTask.taskID].status = "timed_out";
-        state.tasks[state.activeTask.taskID].updatedAt = now();
+        if (state.tasks[activeTaskKey]) {
+          state.tasks[activeTaskKey].status = "timed_out";
+          state.tasks[activeTaskKey].updatedAt = now();
+        }
         state.activeTask = null;
         saveState(projectRoot, state);
       } else {
@@ -329,7 +337,6 @@ export default tool({
     }
 
     let workerRotation = null;
-    const partitionID = activePartitionID(state);
     if (partitionID && workerContext.headroom <= WORKER_ROTATION_HEADROOM) {
       workerRotation = await createWorkerSession(
         context.directory,
@@ -351,15 +358,17 @@ export default tool({
       return `PAUSED: Worker context headroom is too low: ${formatPercent(workerContext.headroom)}.`;
     }
 
-    const previous = state.tasks[args.task_id];
+    const taskKey = taskStateID(partitionID, args.task_id);
+    const previous = state.tasks[taskKey];
     if (previous?.status === "completed") {
-      return `DENIED: ${args.task_id} is already completed.`;
+      return `DENIED: ${args.task_id} is already completed in ${partitionID ?? "the current session"}.`;
     }
     if ((previous?.attempts ?? 0) >= MAX_RETRIES + 1) {
       return `DENIED: ${args.task_id} already used its ${MAX_RETRIES} allowed retries.`;
     }
 
     const task = {
+      stateKey: taskKey,
       taskID: args.task_id,
       objective: args.objective,
       acceptanceCriteria: args.acceptance_criteria,
@@ -370,9 +379,10 @@ export default tool({
       startedAt: now(),
       updatedAt: now(),
     };
-    state.tasks[args.task_id] = task;
+    state.tasks[taskKey] = task;
     state.activeTask = {
       taskID: args.task_id,
+      taskKey,
       workerSessionID: workerID,
       deadline: new Date(Date.now() + MAX_TASK_DURATION_MS).toISOString(),
     };

@@ -14,6 +14,8 @@ The app provides:
 - Natural-language goal to Planner-generated plan draft, with review before apply
 - Run and stop controls for `run-partitions.bat`
 - Current partition, sessions, and runner log display
+- Dependency graph with live Manager/Worker task overlay
+- Graph-based dependency editing and partition detail inspector
 - Partition summary viewer
 - Current Manager/Worker terminal launcher
 - Completed partition archive and permanent deletion actions
@@ -36,10 +38,26 @@ partition depends on the selected partition.
 ## Plan assistant
 
 Enter a natural-language goal in **목표에서 계획 초안 만들기** and select
-**계획 초안 생성**. The app starts or reuses the local OpenCode Server and asks
-a Planner session for JSON only. Review its preview, then choose **현재 계획에
-추가** or **전체 교체**. Nothing is written until you subsequently press
-**계획 저장**.
+**계획 초안 생성**. Select a planning model after **모델 불러오기**, or leave
+the default model selected. Choose **세분화 추천** for long, multi-feature
+goals; it instructs the Planner to separate independently verifiable work into
+multiple partitions. The app starts or reuses the local OpenCode Server and
+asks a Planner session for JSON only. Review its preview and any decomposition
+warning, then choose **현재 계획에 추가** or **전체 교체**. Nothing is written
+until you subsequently press **계획 저장**.
+
+## Dependency graph
+
+The graph renders each partition as a node and each `dependsOn` entry as an
+arrow. A running partition shows its active Manager/Worker task inside the
+node. Dragging a node saves only its visual position to
+`.opencode/orchestration/graph-layout.json`; it does not change execution
+order.
+
+When the runner is idle, drag a connection from one node to another to add a
+dependency. Select an edge and press Delete to remove it. Click a node to edit
+its title, goal, criteria, constraints, and session policy in the inspector.
+Save the plan to apply graph edits to `TODO/plan.json`.
 
 ## Development
 

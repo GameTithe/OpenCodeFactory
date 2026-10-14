@@ -212,6 +212,7 @@ function managerPrompt(projectRoot, state, partition, sessions) {
     ...summaries.map((file) => `- ${file}`),
     "Use delegate_worker for every implementation, file change, or test command.",
     "Create and complete only small, ordered Worker tasks for this partition.",
+    `Prefix every Worker task ID with ${partition.id}- so task records never collide with another partition.`,
     "After verifying the partition acceptance criteria, delegate one final read-only Worker summary task, then call partition_control with status completed and that factual context.",
     "If progress cannot continue, call partition_control with status blocked and explain the blocker.",
     "Do not start another partition after calling partition_control.",

@@ -129,6 +129,36 @@
       "session": {
         "mode": "new"
       }
+    },
+    {
+      "id": "P008-create-nodetest-folder",
+      "title": "Create NodeTest folder",
+      "goal": "Create the NodeTest directory in the workspace root.",
+      "acceptanceCriteria": [
+        "C:\\Users\\Admin\\Desktop\\openCodeSetting\\NodeTest exists as a directory."
+      ],
+      "constraints": [
+        "Do not create or modify any files inside the directory."
+      ],
+      "dependsOn": [],
+      "session": {
+        "mode": "new"
+      }
+    },
+    {
+      "id": "P009-create-autonodetest-folder",
+      "title": "autoNodeTest 폴더 생성",
+      "goal": "프로젝트 루트에 autoNodeTest 디렉터리를 생성한다.",
+      "acceptanceCriteria": [
+        "프로젝트 루트에 autoNodeTest 디렉터리가 존재한다."
+      ],
+      "constraints": [
+        "새 파일이나 다른 디렉터리는 생성하지 않는다."
+      ],
+      "dependsOn": [],
+      "session": {
+        "mode": "new"
+      }
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Partition, Plan, Snapshot } from "./types";
+import PartitionGraph from "./PartitionGraph";
+import type { GeneratedPlan, GraphLayout, GraphPlannerRequest, Partition, Plan, PlannerContext, PlannerModel, PlannerSettings, Snapshot } from "./types";
 
 const emptySnapshot: Snapshot = {
   projectRoot: "",
@@ -30,19 +31,36 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [summary, setSummary] = useState<{ title: string; text: string } | null>(null);
   const [goalText, setGoalText] = useState("");
-  const [generatedPlan, setGeneratedPlan] = useState<Plan | null>(null);
+  const [generatedPlan, setGeneratedPlan] = useState<GeneratedPlan | null>(null);
+  const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>({ model: null, decomposition: "detailed" });
+  const [plannerModels, setPlannerModels] = useState<PlannerModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [graphLayout, setGraphLayout] = useState<GraphLayout>({ positions: {} });
+  const [selectedPartitionID, setSelectedPartitionID] = useState<string | null>(null);
+  const [graphPlanner, setGraphPlanner] = useState<GraphPlannerRequest | null>(null);
+  const [graphPlannerGoal, setGraphPlannerGoal] = useState("");
+  const [graphGeneratedPlan, setGraphGeneratedPlan] = useState<GeneratedPlan | null>(null);
 
   useEffect(() => {
     void window.orchestrator.snapshot().then((next) => {
       setSnapshot(next);
       setPlanText(next.plan ? JSON.stringify(next.plan, null, 2) : "");
     });
+    void window.orchestrator.plannerSettings().then(setPlannerSettings);
+    void window.orchestrator.graphLayout().then(setGraphLayout);
     return window.orchestrator.onChanged((next) => {
       setSnapshot(next);
     });
   }, []);
 
-  const partitions = snapshot.plan?.partitions ?? [];
+  const draftPlan = useMemo(() => {
+    try {
+      return planText.trim() ? JSON.parse(planText) as Plan : null;
+    } catch {
+      return null;
+    }
+  }, [planText]);
+  const partitions = draftPlan?.partitions ?? snapshot.plan?.partitions ?? [];
   const stats = useMemo(() => {
     const statuses = partitions.map((partition) => partitionStatus(snapshot, partition));
     return {
@@ -102,9 +120,59 @@ export default function App() {
   async function generatePlan() {
     try {
       setNotice("Planner가 목표를 분석해 계획 초안을 만들고 있습니다.");
-      const generated = await window.orchestrator.generatePlan(goalText);
+      const generated = await window.orchestrator.generatePlan(goalText, plannerSettings);
       setGeneratedPlan(generated);
       setNotice("계획 초안이 생성되었습니다. 검토 후 적용 방식을 선택하세요.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function openGraphPlanner(request: GraphPlannerRequest) {
+    setGraphPlanner(request);
+    setGraphPlannerGoal("");
+    setGraphGeneratedPlan(null);
+  }
+
+  async function generateGraphPlan() {
+    if (!graphPlanner || !graphPlannerGoal.trim()) return;
+    try {
+      setNotice("Planner가 그래프에 추가할 작업을 분석하고 있습니다.");
+      const context: PlannerContext = graphPlanner.anchor ? { anchor: graphPlanner.anchor } : {};
+      const generated = await window.orchestrator.generatePlan(graphPlannerGoal, plannerSettings, context);
+      setGraphGeneratedPlan(generated);
+      setNotice("그래프 추가 초안이 생성되었습니다.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function appendGraphPlan() {
+    if (!graphPlanner || !graphGeneratedPlan) return;
+    try {
+      const current: Plan = planText.trim()
+        ? JSON.parse(planText) as Plan
+        : { version: 1, goal: graphGeneratedPlan.plan.goal, partitions: [] };
+      const existing = new Set(current.partitions.map((partition) => partition.id));
+      const duplicate = graphGeneratedPlan.plan.partitions.find((partition) => existing.has(partition.id));
+      if (duplicate) throw new Error(`기존 계획에 이미 ${duplicate.id} ID가 있습니다.`);
+      current.partitions.push(...graphGeneratedPlan.plan.partitions);
+      if (!current.goal.trim()) current.goal = graphGeneratedPlan.plan.goal;
+      setPlanText(JSON.stringify(current, null, 2));
+
+      const positions = { ...graphLayout.positions };
+      for (const [index, partition] of graphGeneratedPlan.plan.partitions.entries()) {
+        positions[partition.id] = {
+          x: graphPlanner.position.x + 36 + (index % 3) * 290,
+          y: graphPlanner.position.y + 36 + Math.floor(index / 3) * 210,
+        };
+      }
+      const nextLayout = { positions };
+      setGraphLayout(nextLayout);
+      await window.orchestrator.saveGraphLayout(nextLayout);
+      setGraphPlanner(null);
+      setGraphGeneratedPlan(null);
+      setNotice("노드 초안을 그래프에 추가했습니다. 계획 저장을 눌러 반영하세요.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -114,16 +182,16 @@ export default function App() {
     if (!generatedPlan) return;
     try {
       if (mode === "replace") {
-        setPlanText(JSON.stringify(generatedPlan, null, 2));
+        setPlanText(JSON.stringify(generatedPlan.plan, null, 2));
       } else {
         const current: Plan = planText.trim()
           ? JSON.parse(planText) as Plan
           : { version: 1, goal: "", partitions: [] };
         const existing = new Set(current.partitions.map((partition) => partition.id));
-        const duplicate = generatedPlan.partitions.find((partition) => existing.has(partition.id));
+        const duplicate = generatedPlan.plan.partitions.find((partition) => existing.has(partition.id));
         if (duplicate) throw new Error(`기존 계획에 이미 ${duplicate.id} ID가 있습니다.`);
-        current.partitions.push(...generatedPlan.partitions);
-        if (!current.goal.trim()) current.goal = generatedPlan.goal;
+        current.partitions.push(...generatedPlan.plan.partitions);
+        if (!current.goal.trim()) current.goal = generatedPlan.plan.goal;
         setPlanText(JSON.stringify(current, null, 2));
       }
       setGeneratedPlan(null);
@@ -131,6 +199,71 @@ export default function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async function loadPlannerModels() {
+    try {
+      setModelsLoading(true);
+      const models = await window.orchestrator.plannerModels();
+      setPlannerModels(models);
+      setNotice(`${models.length}개의 Planner 모델을 불러왔습니다.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  async function updatePlannerSettings(next: PlannerSettings) {
+    try {
+      const saved = await window.orchestrator.savePlannerSettings(next);
+      setPlannerSettings(saved);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function editDraft(mutator: (plan: Plan) => void) {
+    try {
+      const plan = draftPlan ?? snapshot.plan;
+      if (!plan) throw new Error("수정할 계획이 없습니다.");
+      const copy = JSON.parse(JSON.stringify(plan)) as Plan;
+      mutator(copy);
+      setPlanText(JSON.stringify(copy, null, 2));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function moveNode(id: string, position: { x: number; y: number }) {
+    const next = { positions: { ...graphLayout.positions, [id]: position } };
+    setGraphLayout(next);
+    void window.orchestrator.saveGraphLayout(next).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+  }
+
+  function connectNodes(source: string, target: string) {
+    editDraft((plan) => {
+      const targetPartition = plan.partitions.find((partition) => partition.id === target);
+      if (!targetPartition) throw new Error("대상 파티션을 찾을 수 없습니다.");
+      targetPartition.dependsOn ??= [];
+      if (!targetPartition.dependsOn.includes(source)) targetPartition.dependsOn.push(source);
+    });
+  }
+
+  function disconnectNodes(source: string, target: string) {
+    editDraft((plan) => {
+      const targetPartition = plan.partitions.find((partition) => partition.id === target);
+      if (targetPartition) targetPartition.dependsOn = targetPartition.dependsOn?.filter((id) => id !== source);
+    });
+  }
+
+  function updateSelectedPartition(changes: Partial<Partition>) {
+    if (!selectedPartitionID) return;
+    editDraft((plan) => {
+      const partition = plan.partitions.find((item) => item.id === selectedPartitionID);
+      if (!partition) throw new Error("선택한 파티션을 찾을 수 없습니다.");
+      Object.assign(partition, changes);
+    });
   }
 
   async function archive(partition: Partition) {
@@ -157,7 +290,24 @@ export default function App() {
     }
   }
 
+  async function retry(partition: Partition) {
+    if (!window.confirm(`${partition.title}을(를) 재시도할까요? 이 파티션의 이전 Worker 작업 기록만 초기화됩니다.`)) return;
+    try {
+      const next = await window.orchestrator.retry(partition.id);
+      setSnapshot(next);
+      setNotice("파티션을 재시도 대기 상태로 되돌렸습니다. 실행을 눌러 다시 시작하세요.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   const active = snapshot.state?.sessions?.active;
+  const selectedPartition = partitions.find((partition) => partition.id === selectedPartitionID) ?? null;
+  const selectedPlannerModelUnavailable = Boolean(
+    plannerSettings.model
+      && plannerModels.length
+      && !plannerModels.some((model) => model.providerID === plannerSettings.model?.providerID && model.modelID === plannerSettings.model?.modelID),
+  );
 
   return (
     <main>
@@ -185,6 +335,39 @@ export default function App() {
         <Metric label="현재 파티션" value={snapshot.state?.run?.currentPartitionID ?? "-"} wide />
       </section>
 
+      <section className="panel graph-panel">
+          <div className="panel-heading">
+            <div><p className="eyebrow">DEPENDENCY GRAPH</p><h2>파티션 실행 흐름</h2><p className="muted">화살표는 선행 작업에서 후속 작업으로 향합니다. 노드를 연결하거나 간선을 선택 후 Delete로 의존성을 수정할 수 있습니다.</p></div>
+            <div className="editor-actions">
+              <span>{snapshot.runner === "running" ? "실행 중에는 읽기 전용" : "드래그로 배치 저장"}</span>
+              <button className="primary" disabled={snapshot.runner === "running"} onClick={() => void savePlan()}>계획 저장</button>
+            </div>
+          </div>
+        <PartitionGraph
+          partitions={partitions}
+          state={snapshot.state}
+          layout={graphLayout}
+          selectedID={selectedPartitionID}
+          editable={snapshot.runner !== "running"}
+          onSelect={setSelectedPartitionID}
+          onMove={moveNode}
+          onConnect={connectNodes}
+          onDisconnect={disconnectNodes}
+          onCreatePlan={openGraphPlanner}
+        />
+        {selectedPartition && <div className="node-inspector">
+          <div className="panel-heading"><div><p className="eyebrow">NODE INSPECTOR</p><h2>{selectedPartition.title}</h2></div><button onClick={() => setSelectedPartitionID(null)}>선택 해제</button></div>
+          <div className="inspector-grid">
+            <label>제목<input disabled={snapshot.runner === "running"} value={selectedPartition.title} onChange={(event) => updateSelectedPartition({ title: event.target.value })} /></label>
+            <label>세션 정책<select disabled={snapshot.runner === "running"} value={selectedPartition.session?.mode ?? "new"} onChange={(event) => updateSelectedPartition({ session: { mode: event.target.value as "new" | "continue" } })}><option value="new">new</option><option value="continue">continue</option></select></label>
+            <label className="full">목표<textarea disabled={snapshot.runner === "running"} value={selectedPartition.goal} onChange={(event) => updateSelectedPartition({ goal: event.target.value })} /></label>
+            <label>완료 조건 (한 줄에 하나)<textarea disabled={snapshot.runner === "running"} value={selectedPartition.acceptanceCriteria.join("\n")} onChange={(event) => updateSelectedPartition({ acceptanceCriteria: event.target.value.split("\n").filter(Boolean) })} /></label>
+            <label>제약 조건 (한 줄에 하나)<textarea disabled={snapshot.runner === "running"} value={(selectedPartition.constraints ?? []).join("\n")} onChange={(event) => updateSelectedPartition({ constraints: event.target.value.split("\n").filter(Boolean) })} /></label>
+          </div>
+          <p className="muted">그래프와 상세 패널의 수정은 아래 `계획 저장`을 눌러야 실제 plan.json에 반영됩니다.</p>
+        </div>}
+      </section>
+
       <section className="workspace">
         <div className="panel partitions">
           <div className="panel-heading">
@@ -208,8 +391,9 @@ export default function App() {
                     </div>
                   </div>
                   <div className="partition-actions">
-                    <button className="text-button" disabled={!state?.summaryFile} onClick={() => void showSummary(partition)}>요약</button>
-                    {status === "completed" && <button className="text-button" onClick={() => void archive(partition)}>아카이브</button>}
+                     <button className="text-button" disabled={!state?.summaryFile} onClick={() => void showSummary(partition)}>요약</button>
+                     {(status === "blocked" || status === "needs_attention") && <button className="text-button" disabled={snapshot.runner === "running"} onClick={() => void retry(partition)}>재시도</button>}
+                     {status === "completed" && <button className="text-button" onClick={() => void archive(partition)}>아카이브</button>}
                     {status === "completed" && <button className="delete-button" onClick={() => void permanentlyDelete(partition)}>완전 삭제</button>}
                   </div>
                 </article>
@@ -241,11 +425,38 @@ export default function App() {
           <div><p className="eyebrow">PLAN ASSISTANT</p><h2>목표에서 계획 초안 만들기</h2></div>
           <button className="primary" disabled={snapshot.runner === "running" || !goalText.trim()} onClick={() => void generatePlan()}>계획 초안 생성</button>
         </div>
+        <div className="planner-options">
+          <label>계획 모델
+            <select value={plannerSettings.model ? `${plannerSettings.model.providerID}::${plannerSettings.model.modelID}` : "default"} disabled={snapshot.runner === "running"} onChange={(event) => {
+              const value = event.target.value;
+              if (value === "default") {
+                void updatePlannerSettings({ ...plannerSettings, model: null });
+                return;
+              }
+              const [providerID, modelID] = value.split("::");
+              void updatePlannerSettings({ ...plannerSettings, model: { providerID, modelID } });
+            }}>
+              <option value="default">기본 모델 사용</option>
+              {selectedPlannerModelUnavailable && <option value={`${plannerSettings.model!.providerID}::${plannerSettings.model!.modelID}`} disabled>현재 사용할 수 없는 모델</option>}
+              {plannerModels.map((model) => <option key={`${model.providerID}::${model.modelID}`} value={`${model.providerID}::${model.modelID}`}>{model.label}</option>)}
+            </select>
+          </label>
+          <button disabled={snapshot.runner === "running" || modelsLoading} onClick={() => void loadPlannerModels()}>{modelsLoading ? "불러오는 중" : "모델 불러오기"}</button>
+          <label>분해 수준
+            <select value={plannerSettings.decomposition} disabled={snapshot.runner === "running"} onChange={(event) => void updatePlannerSettings({ ...plannerSettings, decomposition: event.target.value as PlannerSettings["decomposition"] })}>
+              <option value="detailed">세분화 추천</option>
+              <option value="auto">자동 추천</option>
+              <option value="compact">간단히</option>
+            </select>
+          </label>
+        </div>
+        {selectedPlannerModelUnavailable && <p className="planner-warning">저장된 Planner 모델은 현재 연결되어 있지 않습니다. 기본 모델 또는 목록의 다른 모델을 선택하세요.</p>}
         <textarea className="goal-input" value={goalText} disabled={snapshot.runner === "running"} onChange={(event) => setGoalText(event.target.value)} placeholder="예: 캐릭터 생성, 이동, 공격 기능을 구현해줘. 각 기능은 별도 파티션으로 나누고, 이동과 공격은 이전 작업의 세션을 이어서 사용해줘." />
         <p className="muted">Planner는 파일을 수정하지 않습니다. 생성된 결과는 아래에서 검토한 뒤에만 계획에 적용됩니다.</p>
         {generatedPlan && <div className="generated-plan">
-          <div className="panel-heading"><div><p className="eyebrow">DRAFT PREVIEW</p><h2>{generatedPlan.goal}</h2></div><div className="editor-actions"><button onClick={() => setGeneratedPlan(null)}>버리기</button><button onClick={() => applyGeneratedPlan("append")}>현재 계획에 추가</button><button className="primary" onClick={() => applyGeneratedPlan("replace")}>전체 교체</button></div></div>
-          <pre>{JSON.stringify(generatedPlan, null, 2)}</pre>
+          <div className="panel-heading"><div><p className="eyebrow">DRAFT PREVIEW</p><h2>{generatedPlan.plan.goal}</h2><p className="muted">생성된 파티션 {generatedPlan.plan.partitions.length}개</p></div><div className="editor-actions"><button onClick={() => setGeneratedPlan(null)}>버리기</button><button onClick={() => applyGeneratedPlan("append")}>현재 계획에 추가</button><button className="primary" onClick={() => applyGeneratedPlan("replace")}>전체 교체</button></div></div>
+          {generatedPlan.warnings.map((warning) => <p className="planner-warning" key={warning}>{warning}</p>)}
+          <pre>{JSON.stringify(generatedPlan.plan, null, 2)}</pre>
         </div>}
       </section>
 
@@ -265,6 +476,19 @@ export default function App() {
         <section className="modal" onClick={(event) => event.stopPropagation()}>
           <div className="panel-heading"><h2>{summary.title}</h2><button onClick={() => setSummary(null)}>닫기</button></div>
           <pre>{summary.text}</pre>
+        </section>
+      </div>}
+      {graphPlanner && <div className="modal-backdrop" onClick={() => setGraphPlanner(null)}>
+        <section className="modal planner-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="panel-heading"><div><p className="eyebrow">GRAPH PLANNER</p><h2>그래프에 작업 추가</h2></div><button onClick={() => setGraphPlanner(null)}>닫기</button></div>
+          <p className="muted">{graphPlanner.anchor ? `${graphPlanner.anchor.title}을(를) 문맥으로 전달합니다. 의존성 연결은 Planner가 목표를 바탕으로 판단합니다.` : "새 작업의 목표를 입력하세요. Planner가 필요한 노드와 의존성을 제안합니다."}</p>
+          <textarea className="goal-input" value={graphPlannerGoal} onChange={(event) => setGraphPlannerGoal(event.target.value)} placeholder="예: 로그인 이후의 사용자 프로필 편집 기능을 추가해줘." autoFocus />
+          {!graphGeneratedPlan && <div className="editor-actions modal-actions"><button className="primary" disabled={!graphPlannerGoal.trim()} onClick={() => void generateGraphPlan()}>계획 초안 생성</button></div>}
+          {graphGeneratedPlan && <div className="generated-plan">
+            <div className="panel-heading"><div><p className="eyebrow">GRAPH DRAFT</p><h2>{graphGeneratedPlan.plan.partitions.length}개 노드</h2></div><div className="editor-actions"><button onClick={() => setGraphGeneratedPlan(null)}>다시 작성</button><button className="primary" onClick={() => void appendGraphPlan()}>그래프에 추가</button></div></div>
+            {graphGeneratedPlan.warnings.map((warning) => <p className="planner-warning" key={warning}>{warning}</p>)}
+            <pre>{JSON.stringify(graphGeneratedPlan.plan, null, 2)}</pre>
+          </div>}
         </section>
       </div>}
     </main>

@@ -1,0 +1,7 @@
+{
+  "model": {
+    "providerID": "openai",
+    "modelID": "gpt-6-luna"
+  },
+  "decomposition": "compact"
+}
